@@ -25,11 +25,15 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.widget.Toast;
 import btools.mapaccess.PhysicalFile;
+import btools.mapaccess.Rd5DiffManager;
+import btools.mapaccess.Rd5DiffTool;
 import btools.router.RoutingHelper;
+import btools.util.ProgressListener;
 
 public class BInstallerView extends View
 {
-	private static final int MASK_SELECTED_RD5 = 1;
+  private static final int MASK_SELECTED_RD5 = 1;
+  private static final int MASK_DELETED_RD5 = 2;
   private static final int MASK_INSTALLED_RD5 = 4;
   private static final int MASK_CURRENT_RD5 = 8;
 	
@@ -61,10 +65,13 @@ public class BInstallerView extends View
 
     private long currentDownloadSize;
     private String currentDownloadFile = "";
+    private volatile String currentDownloadOperation = "";
     private String downloadAction = "";
+    private volatile String newDownloadAction = "";
 
     private long totalSize = 0;
     private long rd5Tiles = 0;
+    private long delTiles = 0;
 
     protected String baseNameForTile( int tileIndex )
     {
@@ -111,6 +118,12 @@ public class BInstallerView extends View
     		return;
     	}
 
+      if ( delTiles > 0 )
+      {
+        ( (BInstallerActivity) getContext() ).showConfirmDelete();
+        return;
+      }
+
         int tidx_min = -1;
         int min_size = Integer.MAX_VALUE;
     	
@@ -144,6 +157,7 @@ public class BInstallerView extends View
     	String namebase = baseNameForTile( tileIndex );
       String baseurl = "http://brouter.de/brouter/segments4/";
         currentDownloadFile = namebase + ".rd5";
+        currentDownloadOperation = "Checking";
         String url = baseurl + currentDownloadFile;
     	isDownloading = true;
     	downloadCanceled = false;
@@ -241,7 +255,7 @@ public class BInstallerView extends View
         	 tileStatus[tidx] |= MASK_INSTALLED_RD5;
         	 
         	 long age = System.currentTimeMillis() - new File( dir, fileName ).lastModified();
-        	 if ( age < 86400000 ) tileStatus[tidx] |= MASK_CURRENT_RD5;
+        	 if ( age < 10800000 ) tileStatus[tidx] |= MASK_CURRENT_RD5; // 3 hours
           }
         }
     }
@@ -271,8 +285,8 @@ public class BInstallerView extends View
            float scaleX = imgwOrig / ((float)bmp.getWidth());
            float scaley = imghOrig / ((float)bmp.getHeight());
            
-           viewscale = scaleX < scaley ? scaleX : scaley;            
-
+           viewscale = scaleX < scaley ? scaleX : scaley;  
+           
            mat = new Matrix();
            mat.postScale( viewscale, viewscale );
            tilesVisible = false;
@@ -340,22 +354,26 @@ public class BInstallerView extends View
               }
           }
           rd5Tiles = 0;
+          delTiles = 0;
           totalSize = 0;
-              int mask2 = MASK_SELECTED_RD5 | MASK_INSTALLED_RD5;
+              int mask2 = MASK_SELECTED_RD5 | MASK_DELETED_RD5 | MASK_INSTALLED_RD5;
               int mask3 = mask2 | MASK_CURRENT_RD5;
               Paint pnt_2 = new Paint();
               pnt_2.setColor(Color.GRAY);
               pnt_2.setStrokeWidth(1);
-              drawSelectedTiles( canvas, pnt_2, fw, fh, MASK_INSTALLED_RD5, mask3, false, drawGrid );
+              drawSelectedTiles( canvas, pnt_2, fw, fh, MASK_INSTALLED_RD5, mask3, false, false, drawGrid );
               pnt_2.setColor(Color.BLUE);
               pnt_2.setStrokeWidth(1);
-              drawSelectedTiles( canvas, pnt_2, fw, fh, MASK_INSTALLED_RD5 | MASK_CURRENT_RD5, mask3, false, drawGrid );
+              drawSelectedTiles( canvas, pnt_2, fw, fh, MASK_INSTALLED_RD5 | MASK_CURRENT_RD5, mask3, false, false, drawGrid );
               pnt_2.setColor(Color.GREEN);
               pnt_2.setStrokeWidth(2);
-              drawSelectedTiles( canvas, pnt_2, fw, fh, MASK_SELECTED_RD5, mask2, true, drawGrid );
+              drawSelectedTiles( canvas, pnt_2, fw, fh, MASK_SELECTED_RD5, mask2, true, false, drawGrid );
               pnt_2.setColor(Color.YELLOW);
               pnt_2.setStrokeWidth(2);
-              drawSelectedTiles( canvas, pnt_2, fw, fh, MASK_SELECTED_RD5 | MASK_INSTALLED_RD5, mask2, true, drawGrid );
+              drawSelectedTiles( canvas, pnt_2, fw, fh, MASK_SELECTED_RD5 | MASK_INSTALLED_RD5, mask2, true, false, drawGrid );
+              pnt_2.setColor(Color.RED);
+              pnt_2.setStrokeWidth(2);
+              drawSelectedTiles( canvas, pnt_2, fw, fh, MASK_DELETED_RD5 | MASK_INSTALLED_RD5, mask2, false, true, drawGrid );
 
         	canvas.setMatrix( matText );
 
@@ -368,13 +386,13 @@ public class BInstallerView extends View
            	{
               String sizeHint = currentDownloadSize > 0 ? " (" + ((currentDownloadSize + mb-1)/mb) + " MB)" : "";
               paint.setTextSize(30);
-              canvas.drawText( "Loading " + currentDownloadFile + sizeHint, 30, (imgh/3)*2-30, paint);
+              canvas.drawText( currentDownloadOperation +  " " + currentDownloadFile + sizeHint, 30, (imgh/3)*2-30, paint);
               canvas.drawText( downloadAction, 30, (imgh/3)*2, paint);
            	}
             if ( !tilesVisible )
             {
-                paint.setTextSize(40);
-                canvas.drawText( "Zoom in to see grid!", 30, (imgh/3)*2, paint);
+                paint.setTextSize(35);
+                canvas.drawText( "Touch region to zoom in!", 30, (imgh/3)*2, paint);
             }
             paint.setTextSize(20);
             
@@ -388,6 +406,7 @@ public class BInstallerView extends View
 
             String btnText = null;
             if ( isDownloading ) btnText = "Cancel Download";
+            else if ( delTiles > 0 ) btnText = "Delete " + delTiles + " tiles";
             else if ( rd5Tiles > 0 ) btnText = "Start Download";
             
             if ( btnText != null )
@@ -407,7 +426,7 @@ public class BInstallerView extends View
         
 float tx, ty;        
 
-  private void drawSelectedTiles( Canvas canvas, Paint pnt, float fw, float fh, int status, int mask, boolean doCount, boolean doDraw )
+  private void drawSelectedTiles( Canvas canvas, Paint pnt, float fw, float fh, int status, int mask, boolean doCount, boolean cntDel, boolean doDraw )
   {
     for ( int ix = 0; ix < 72; ix++ )
       for ( int iy = 0; iy < 36; iy++ )
@@ -421,6 +440,11 @@ float tx, ty;
             if ( doCount )
             {
               rd5Tiles++;
+              totalSize += BInstallerSizes.getRd5Size( tidx );
+            }
+            if ( cntDel )
+            {
+              delTiles++;
               totalSize += BInstallerSizes.getRd5Size( tidx );
             }
             if ( !doDraw )
@@ -437,6 +461,23 @@ float tx, ty;
           }
         }
       }
+  }
+
+  public void deleteSelectedTiles()
+  {
+    for ( int ix = 0; ix < 72; ix++ )
+    {
+      for ( int iy = 0; iy < 36; iy++ )
+      {
+        int tidx = gridPos2Tileindex( ix, iy );
+        if ( ( tileStatus[tidx] & MASK_DELETED_RD5 ) != 0 )
+        {
+          new File( baseDir + "/brouter/segments4/" + baseNameForTile( tidx ) + ".rd5").delete();
+        }
+      }
+    }
+    scanExistingFiles(); 
+    invalidate();
   }
 
         @Override
@@ -482,7 +523,7 @@ float tx, ty;
                 	float r = (float)Math.sqrt( (x1-x0)*(x1-x0) + (y1-y0)*(y1-y0) );
                 	float hr = (float)Math.sqrt( (hx1-hx0)*(hx1-hx0) + (hy1-hy0)*(hy1-hy0) );
                 	
-                	if ( hr > 10. )
+                	if ( hr > 0. )
                 	{
                 	  float ratio = r/hr;
 
@@ -502,7 +543,7 @@ float tx, ty;
                 	  boolean tilesv = currentScale() >= 3.f;
                 	  if ( tilesVisible && !tilesv )
                 	  {
-                        clearTileSelection( MASK_SELECTED_RD5 );
+                        clearTileSelection( MASK_SELECTED_RD5 | MASK_DELETED_RD5 );
                       }
                 	  tilesVisible = tilesv;
                 	}
@@ -528,14 +569,26 @@ float tx, ty;
               	}
             	
                 // download button?
-              if ( ( rd5Tiles  > 0 || isDownloading ) && event.getX() > imgwOrig - btnw*scaleOrig && event.getY() > imghOrig-btnh*scaleOrig )
+              if ( ( delTiles  > 0 || rd5Tiles  > 0 || isDownloading ) && event.getX() > imgwOrig - btnw*scaleOrig && event.getY() > imghOrig-btnh*scaleOrig )
             	{
             		toggleDownload();
                 	invalidate();
             		break;
             	}
 
-            	if ( isDownloading || !tilesVisible ) break;
+              if ( !tilesVisible )
+              {
+                float scale = currentScale();
+                if ( scale > 0f && scale < 5f )
+                {
+                  float ratio = 5f / scale;
+                  mat.postScale( ratio, ratio, event.getX(), event.getY() );
+                  tilesVisible = true;
+                }
+                break;
+              }
+
+            	if ( isDownloading ) break;
 
             	Matrix imat = new Matrix();
             	if ( mat.invert(imat) )
@@ -548,9 +601,21 @@ float tx, ty;
             	  int tidx = tileIndex( touchpoint[0], touchpoint[1] );
             	  if ( tidx != -1 )
             	  {
-            	    if ( ( tileStatus[tidx] & MASK_CURRENT_RD5 ) == 0 )
+            	    if ( ( tileStatus[tidx] & MASK_SELECTED_RD5 ) != 0 )
             	    {
-            	      tileStatus[tidx] ^= MASK_SELECTED_RD5;
+                    tileStatus[tidx] ^= MASK_SELECTED_RD5;
+            	      if ( ( tileStatus[tidx] & MASK_INSTALLED_RD5 ) != 0 )
+            	      {
+            	        tileStatus[tidx] |= MASK_DELETED_RD5;
+            	      }
+            	    }
+            	    else if ( ( tileStatus[tidx] & MASK_DELETED_RD5 ) != 0 )
+                  {
+                    tileStatus[tidx] ^= MASK_DELETED_RD5;
+                  }
+            	    else
+            	    {
+                    tileStatus[tidx] ^= MASK_SELECTED_RD5;
             	    }
             	  }
             	  
@@ -573,7 +638,7 @@ float tx, ty;
         
         // usually, subclasses of AsyncTask are declared inside the activity class.
         // that way, you can easily modify the UI thread from here
-        private class DownloadTask extends AsyncTask<String, Integer, String> {
+        private class DownloadTask extends AsyncTask<String, Integer, String> implements ProgressListener {
 
             private Context context;
             private PowerManager.WakeLock mWakeLock;
@@ -583,6 +648,19 @@ float tx, ty;
             }
 
             @Override
+            public void updateProgress( String progress )
+            {
+              newDownloadAction = progress;
+              publishProgress( 0 );
+            }
+  
+            @Override
+            public boolean isCanceled()
+            {
+              return isDownloadCanceled();
+            }
+
+              @Override
             protected String doInBackground(String... sUrls)
             {
               InputStream input = null;
@@ -595,16 +673,48 @@ float tx, ty;
               {
                 try
                 {
-                    URL url = new URL(surl);
+                    int slidx = surl.lastIndexOf( "segments4/" );
+                    String name = surl.substring( slidx+10 );
+                    String surlBase = surl.substring( 0, slidx+10 );
+                    fname = baseDir + "/brouter/segments4/" + name;
 
-                    connection = (HttpURLConnection) url.openConnection();
-                    connection.connect();
+                    boolean delta = true;
 
+                    File targetFile = new File( fname );
+                    if ( targetFile.exists() )
+                    {
+                      updateProgress( "Calculating local checksum.." );
+                    
+                      // first check for a delta file
+                      String md5 = Rd5DiffManager.getMD5( targetFile );
+                      String surlDelta = surlBase + "diff/" + name.replace( ".rd5", "/" + md5 + ".rd5diff" );
+                      
+                      URL urlDelta = new URL(surlDelta);
+
+                      updateProgress( "Connecting.." );
+
+                      connection = (HttpURLConnection) urlDelta.openConnection();
+                      connection.connect();
+
+                      // 404 kind of expected here, means there's no delta file
+                      if (connection.getResponseCode() == HttpURLConnection.HTTP_NOT_FOUND )
+                      {
+                        connection = null;
+                      }
+                    }                   
+                
+                    if ( connection == null )
+                    {                
+                      delta = false;
+                      URL url = new URL(surl);
+                      connection = (HttpURLConnection) url.openConnection();
+                      connection.connect();
+                    }
                     // expect HTTP 200 OK, so we don't mistakenly save error report
                     // instead of the file
                     if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
                         return "Server returned HTTP " + connection.getResponseCode()
-                                + " " + connection.getResponseMessage();
+                              + " " + connection.getResponseMessage();
                     }
 
                     // this will be useful to display download percentage
@@ -612,13 +722,13 @@ float tx, ty;
                     int fileLength = connection.getContentLength();
                     currentDownloadSize = fileLength;
                     if ( availableSize >= 0 && fileLength > availableSize ) return "not enough space on sd-card";
+
+                    currentDownloadOperation = delta ? "Updating" : "Loading";
                     
                     // download the file
                     input = connection.getInputStream();
                     
-                    int slidx = surl.lastIndexOf( "segments4/" );
-                    fname = baseDir + "/brouter/segments4/" + surl.substring( slidx+10 );
-                    tmp_file = new File( fname + "_tmp" );
+                    tmp_file = new File( fname + ( delta ? "_diff" : "_tmp" ) );
                     output = new FileOutputStream( tmp_file );
 
                     byte data[] = new byte[4096];
@@ -632,7 +742,15 @@ float tx, ty;
                         total += count;
                         // publishing the progress....
                         if (fileLength > 0) // only if total length is known
-                            publishProgress((int) (total * 100 / fileLength));
+                        {
+                          int pct = (int) (total * 100 / fileLength);
+                          updateProgress( "Progress " + pct + "%" );
+                        }
+                        else
+                        {
+                          updateProgress( "Progress (unnown size)" );
+                        }
+
                         output.write(data, 0, count);
                         
                         // enforce < 2 Mbit/s
@@ -642,15 +760,33 @@ float tx, ty;
                         	try { Thread.sleep( dt ); } catch( InterruptedException ie ) {}
                         }
                     }
-                    publishProgress( 101 );
-                    String check_result = PhysicalFile.checkFileIntegrity( tmp_file );
-                    if ( check_result != null ) return check_result;
+                    output.close();
+                    output = null;
 
-                    if ( !tmp_file.renameTo( new File( fname ) ) )
+                    if ( delta )
                     {
-                      return "Could not rename to " + fname;
+                      updateProgress( "Applying delta.." );
+                      File diffFile = tmp_file;
+                      tmp_file = new File( fname + "_tmp" );
+                      Rd5DiffTool.recoverFromDelta( targetFile, diffFile, tmp_file, this );
+                      diffFile.delete();
                     }
-                    deleteRawTracks(); // invalidate raw-tracks after data update
+                    if (isDownloadCanceled())
+                    {
+                      return "Canceled!";
+                    }
+                    if ( tmp_file != null )
+                    {
+                      updateProgress( "Verifying integrity.." );
+                      String check_result = PhysicalFile.checkFileIntegrity( tmp_file );
+                      if ( check_result != null ) return check_result;
+
+                      if ( !tmp_file.renameTo( targetFile ) )
+                      {
+                        return "Could not rename to " + targetFile;
+                      }
+                      deleteRawTracks(); // invalidate raw-tracks after data update
+                    }
                     return null;
                 } catch (Exception e) {
                     return e.toString();
@@ -685,10 +821,9 @@ float tx, ty;
 
             @Override
             protected void onProgressUpdate(Integer... progress) {
-            	String newAction = progress[0] == 101 ? "Verifying.." : "Progress " + progress[0] + "%";
-            	if ( !newAction.equals( downloadAction ) )
+            	if ( !newDownloadAction.equals( downloadAction ) )
             	{
-            	  downloadAction = newAction;
+            	  downloadAction = newDownloadAction;
             	  invalidate();
             	}
             }

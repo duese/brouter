@@ -25,7 +25,7 @@ public class PosUnifier extends MapCreatorBase
   private DiffCoderDataOutputStream nodesOutStream;
   private DiffCoderDataOutputStream borderNodesOut;
   private File nodeTilesOut;
-  private CompactLongSet positionSet;
+  private CompactLongSet[] positionSets;
 
   private HashMap<String, SrtmRaster> srtmmap;
   private int lastSrtmLonIdx;
@@ -82,7 +82,7 @@ public class PosUnifier extends MapCreatorBase
 
     nodesOutStream = createOutStream( fileFromTemplate( nodefile, nodeTilesOut, "u5d" ) );
 
-    positionSet = new CompactLongSet();
+    positionSets = new CompactLongSet[2500];
   }
 
   @Override
@@ -106,7 +106,35 @@ public class PosUnifier extends MapCreatorBase
     nodesOutStream.close();
   }
 
+  private boolean checkAdd( int lon, int lat )
+  {
+    int slot = ((lon%5000000)/100000)*50 + ((lat%5000000)/100000);    
+    long id = ( (long) lon ) << 32 | lat;
+    CompactLongSet set = positionSets[slot];
+    if ( set == null )
+    {
+      positionSets[slot] = set = new CompactLongSet();
+    }
+    if ( !set.contains( id ) )
+    {
+      set.fastAdd( id );
+      return true;
+    }
+    return false;
+  }
+      
+
+
+
   private void findUniquePos( NodeData n )
+  {
+    if ( !checkAdd( n.ilon, n.ilat ) )
+    {
+      _findUniquePos( n );
+    }
+  }
+
+  private void _findUniquePos( NodeData n )
   {
     // fix the position for uniqueness
     int lonmod = n.ilon % 1000000;
@@ -119,10 +147,8 @@ public class PosUnifier extends MapCreatorBase
       {
         int lon = n.ilon + lonsteps * londelta;
         int lat = n.ilat + latsteps * latdelta;
-        long pid = ( (long) lon ) << 32 | lat; // id from position
-        if ( !positionSet.contains( pid ) )
+        if ( checkAdd( lon, lat ) )
         {
-          positionSet.fastAdd( pid );
           n.ilon = lon;
           n.ilat = lat;
           return;
@@ -139,12 +165,8 @@ public class PosUnifier extends MapCreatorBase
   private SrtmRaster srtmForNode( int ilon, int ilat ) throws Exception
   {
     int srtmLonIdx = ( ilon + 5000000 ) / 5000000;
-    int srtmLatIdx = ( 154999999 - ilat ) / 5000000;
+    int srtmLatIdx = ( 654999999 - ilat ) / 5000000 - 100; // ugly negative rounding...
 
-    if ( srtmLatIdx < 1 || srtmLatIdx > 24 || srtmLonIdx < 1 || srtmLonIdx > 72 )
-    {
-      return null;
-    }
     if ( srtmLonIdx == lastSrtmLonIdx && srtmLatIdx == lastSrtmLatIdx )
     {
       return lastSrtmRaster;
@@ -152,11 +174,9 @@ public class PosUnifier extends MapCreatorBase
     lastSrtmLonIdx = srtmLonIdx;
     lastSrtmLatIdx = srtmLatIdx;
 
-    StringBuilder sb = new StringBuilder( 16 );
-    sb.append( "srtm_" );
-    sb.append( (char) ( '0' + srtmLonIdx / 10 ) ).append( (char) ( '0' + srtmLonIdx % 10 ) ).append( '_' );
-    sb.append( (char) ( '0' + srtmLatIdx / 10 ) ).append( (char) ( '0' + srtmLatIdx % 10 ) );
-    String filename = sb.toString();
+    String slonidx = "0" + srtmLonIdx;
+    String slatidx = "0" + srtmLatIdx;
+    String filename = "srtm_" + slonidx.substring( slonidx.length()-2 ) + "_" + slatidx.substring( slatidx.length()-2 );
 
     lastSrtmRaster = srtmmap.get( filename );
     if ( lastSrtmRaster == null && !srtmmap.containsKey( filename ) )

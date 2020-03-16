@@ -177,7 +177,7 @@ public class BRouterView extends View
       String basedir = fbd.getAbsolutePath();
       AppLogger.log( "using basedir: " + basedir );
 
-      String version = "v1.5.5";
+      String version = "v1.6.1";
 
       // create missing directories
       assertDirectoryExists( "project directory", basedir + "/brouter", null, null );
@@ -606,7 +606,9 @@ public class BRouterView extends View
             if ( ze == null )
               break;
             String name = ze.getName();
-            FileOutputStream fos = new FileOutputStream( new File( f, name ) );
+            File outfile = new File( f, name );
+            outfile.getParentFile().mkdirs();
+            FileOutputStream fos = new FileOutputStream( outfile );
 
             for ( ;; )
             {
@@ -825,7 +827,7 @@ public class BRouterView extends View
         else
         {
           String memstat =  memoryClass + "mb pathPeak " + ((cr.getPathPeak()+500)/1000) + "k";
-          String result = "version = BRouter-1.5.5\n" + "mem = " + memstat + "\ndistance = " + cr.getDistance() / 1000. + " km\n" + "filtered ascend = " + cr.getAscend()
+          String result = "version = BRouter-1.6.1\n" + "mem = " + memstat + "\ndistance = " + cr.getDistance() / 1000. + " km\n" + "filtered ascend = " + cr.getAscend()
               + " m\n" + "plain ascend = " + cr.getPlainAscend() + " m\n" + "estimated time = " + cr.getTime();
 
           rawTrack = cr.getFoundRawTrack();

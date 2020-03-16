@@ -32,9 +32,10 @@ import btools.util.LazyArrayOfLists;
  *
  * @author ab
  */
-public class WayLinker extends MapCreatorBase
+public class WayLinker extends MapCreatorBase implements Runnable
 {
   private File nodeTilesIn;
+  private File wayTilesIn;
   private File trafficTilesIn;
   private File dataTilesOut;
   private File borderFileIn;
@@ -64,6 +65,59 @@ public class WayLinker extends MapCreatorBase
   private int divisor = 32;
   private int cellsize = 1000000 / divisor;
 
+  private boolean skipEncodingCheck;
+
+  private boolean isSlave;
+  private ThreadController tc;
+
+  public static final class ThreadController
+  {
+    long maxFileSize = 0L;
+    long currentSlaveSize;   
+    long currentMasterSize = 2000000000L;
+    
+    synchronized boolean setCurrentMasterSize( long size )
+    {
+      try
+      {
+        if ( size <= currentSlaveSize )
+        {
+          maxFileSize = Long.MAX_VALUE;
+          return false;
+        }
+        currentMasterSize = size;
+        if ( maxFileSize == 0L )
+        {
+          maxFileSize = size;
+        }
+        return true;
+      }
+      finally
+      {
+        notify();
+      }
+    }
+
+    synchronized boolean setCurrentSlaveSize( long size ) throws Exception
+    {
+      if ( size >= currentMasterSize )
+      {
+        return false;
+      }
+      
+      while ( size + currentMasterSize + 50000000L > maxFileSize )
+      {
+        System.out.println( "****** slave thread waiting for permission to process file of size " + size 
+          + " currentMaster=" + currentMasterSize + " maxFileSize=" + maxFileSize );
+        wait( 10000 );
+      }
+      currentSlaveSize = size;
+      return true;
+    }
+  }
+  
+  
+
   private void reset()
   {
     minLon = -1;
@@ -81,6 +135,7 @@ public class WayLinker extends MapCreatorBase
           .println( "usage: java WayLinker <node-tiles-in> <way-tiles-in> <bordernodes> <restrictions> <lookup-file> <profile-file> <data-tiles-out> <data-tiles-suffix> " );
       return;
     }
+    
     new WayLinker().process( new File( args[0] ), new File( args[1] ), new File( args[2] ), new File( args[3] ), new File( args[4] ), new File( args[5] ), new File(
         args[6] ), args[7] );
   }
@@ -88,8 +143,32 @@ public class WayLinker extends MapCreatorBase
   public void process( File nodeTilesIn, File wayTilesIn, File borderFileIn, File restrictionsFileIn, File lookupFile, File profileFile, File dataTilesOut,
       String dataTilesSuffix ) throws Exception
   {
+    WayLinker master = new WayLinker();
+    WayLinker slave = new WayLinker();
+    slave.isSlave = true;
+    master.isSlave = false;
+    
+    ThreadController tc = new ThreadController();
+    slave.tc = tc;
+    master.tc = tc;
+    
+    master._process( nodeTilesIn, wayTilesIn, borderFileIn, restrictionsFileIn, lookupFile,  profileFile, dataTilesOut, dataTilesSuffix );
+    slave._process( nodeTilesIn, wayTilesIn, borderFileIn, restrictionsFileIn, lookupFile,  profileFile, dataTilesOut, dataTilesSuffix );
+        
+    Thread m = new Thread( master );
+    Thread s = new Thread( slave );
+    m.start();
+    s.start();
+    m.join();
+    s.join();
+  }
+
+  private void _process( File nodeTilesIn, File wayTilesIn, File borderFileIn, File restrictionsFileIn, File lookupFile, File profileFile, File dataTilesOut,
+      String dataTilesSuffix ) throws Exception
+  {
     this.nodeTilesIn = nodeTilesIn;
-    this.trafficTilesIn = new File( "traffic" );
+    this.wayTilesIn = wayTilesIn;
+    this.trafficTilesIn = new File( "../traffic" );
     this.dataTilesOut = dataTilesOut;
     this.borderFileIn = borderFileIn;
     this.restrictionsFileIn = restrictionsFileIn;
@@ -110,18 +189,64 @@ public class WayLinker extends MapCreatorBase
 
     abUnifier = new ByteArrayUnifier( 16384, false );
 
-    // then process all segments
-    new WayIterator( this, true ).processDir( wayTilesIn, ".wt5" );
+    skipEncodingCheck = Boolean.getBoolean( "skipEncodingCheck" );
+
+  }
+  
+  @Override
+  public void run()
+  {
+    try
+    {
+      // then process all segments
+      new WayIterator( this, true, !isSlave ).processDir( wayTilesIn, ".wt5" );
+    }
+    catch( Exception e )
+    {
+      System.out.println( "******* thread (slave=" + isSlave + ") got Exception: " + e );
+      throw new RuntimeException( e );
+    }
+    finally
+    {
+      if (!isSlave)
+      {
+        tc.setCurrentMasterSize( 0L );
+      }
+    }
   }
 
   @Override
   public boolean wayFileStart( File wayfile ) throws Exception
   {
-    File trafficFile = fileFromTemplate( wayfile, trafficTilesIn, "trf" );
-    if ( trafficTilesIn.isDirectory() && !trafficFile.exists() )
+
+    // master/slave logic:
+    // total memory size should stay below a maximum
+    // and no file should be processed twice
+
+    long filesize = wayfile.length();    
+
+    System.out.println( "**** wayFileStart() for isSlave=" + isSlave + " size=" + filesize );
+
+    if ( isSlave )
     {
-      return false;
+      if ( !tc.setCurrentSlaveSize( filesize ) )
+      {
+        return false;
+      }
     }
+    else
+    {
+      if ( !tc.setCurrentMasterSize( filesize ) )
+      {
+        return false;
+      }
+    }
+  
+    
+  
+  
+  
+    File trafficFile = fileFromTemplate( wayfile, trafficTilesIn, "trf" );
 
     // process corresponding node-file, if any
     File nodeFile = fileFromTemplate( wayfile, nodeTilesIn, "u5d" );
@@ -142,34 +267,38 @@ public class WayLinker extends MapCreatorBase
       FrozenLongMap<OsmNodeP> nodesMapFrozen = new FrozenLongMap<OsmNodeP>( nodesMap );
       nodesMap = nodesMapFrozen;
 
+      File restrictionFile = fileFromTemplate( wayfile, new File( nodeTilesIn.getParentFile(), "restrictions55" ), "rt5" );
       // read restrictions for nodes in nodesMap
-      DataInputStream di = new DataInputStream( new BufferedInputStream ( new FileInputStream( restrictionsFileIn ) ) );
-      int ntr = 0;
-      try
+      if ( restrictionFile.exists() )
       {
-        for(;;)
+        DataInputStream di = new DataInputStream( new BufferedInputStream ( new FileInputStream( restrictionFile ) ) );
+        int ntr = 0;
+        try
         {
-          RestrictionData res = new RestrictionData( di );
-          OsmNodeP n = nodesMap.get( res.viaNid );
-          if ( n != null )
+          for(;;)
           {
-            if ( ! ( n instanceof OsmNodePT ) )
+            RestrictionData res = new RestrictionData( di );
+            OsmNodeP n = nodesMap.get( res.viaNid );
+            if ( n != null )
             {
-              n = new OsmNodePT( n );
-              nodesMap.put( res.viaNid, n );
+              if ( ! ( n instanceof OsmNodePT ) )
+              {
+                n = new OsmNodePT( n );
+                nodesMap.put( res.viaNid, n );
+              }
+              OsmNodePT nt = (OsmNodePT) n;
+              res.next = nt.firstRestriction;
+              nt.firstRestriction = res;
+              ntr++;
             }
-            OsmNodePT nt = (OsmNodePT) n;
-            res.next = nt.firstRestriction;
-            nt.firstRestriction = res;
-            ntr++;
           }
         }
+        catch( EOFException eof )
+        {
+          di.close();
+        }
+        System.out.println( "read " + ntr + " turn-restrictions" );
       }
-      catch( EOFException eof )
-      {
-        di.close();
-      }
-      System.out.println( "read " + ntr + " turn-restrictions" );
 
       nodesList = nodesMapFrozen.getValueList();
     }
@@ -177,8 +306,8 @@ public class WayLinker extends MapCreatorBase
     // read a traffic-file, if any
     if ( trafficFile.exists() )
     {
-      trafficMap = new OsmTrafficMap();
-      trafficMap.load( trafficFile, minLon, minLat, minLon + 5000000, minLat + 5000000, false );
+      trafficMap = new OsmTrafficMap( expctxWay );
+      trafficMap.loadAll( trafficFile, minLon, minLat, minLon + 5000000, minLat + 5000000, false );
     }
     return true;
   }
@@ -257,7 +386,6 @@ public class WayLinker extends MapCreatorBase
   public void nextWay( WayData way ) throws Exception
   {
     byte[] description = abUnifier.unify( way.description );
-    int lastTraffic = 0;
 
     // filter according to profile
     expctxWay.evaluate( false, description );
@@ -288,15 +416,6 @@ public class WayLinker extends MapCreatorBase
       
         OsmLinkP link = n2.createLink( n1 );
 
-        int traffic = trafficMap == null ? 0 : trafficMap.getTrafficClass( n1.getIdFromPos(), n2.getIdFromPos() );
-        if ( traffic != lastTraffic )
-        {
-          expctxWay.decode( description );
-          expctxWay.addLookupValue( "estimated_traffic_class", traffic == 0 ? 0 : traffic + 1 );
-          description = abUnifier.unify( expctxWay.encode() );
-          lastTraffic = traffic;
-          n1.incWayCount(); // force network node due to description change
-        }
         link.descriptionBitmap = description;
 
         if ( n1.ilon / cellsize != n2.ilon / cellsize || n1.ilat / cellsize != n2.ilat / cellsize )
@@ -321,7 +440,6 @@ public class WayLinker extends MapCreatorBase
 
     nodesMap = null;
     borderSet = null;
-    trafficMap = null;
 
     byte[] abBuf1 = new byte[10 * 1024 * 1024];
     byte[] abBuf2 = new byte[10 * 1024 * 1024];
@@ -423,7 +541,7 @@ public class WayLinker extends MapCreatorBase
 
                 for ( OsmNodeP n : sortedList.values() )
                 {
-                  n.writeNodeData( mc );
+                  n.writeNodeData( mc, trafficMap );
                 }
                 if ( mc.getSize() > 0 )
                 {
@@ -433,7 +551,11 @@ public class WayLinker extends MapCreatorBase
                     int len = mc.encodeMicroCache( abBuf1 );
                     subBytes = new byte[len];
                     System.arraycopy( abBuf1, 0, subBytes, 0, len );
-
+                    
+                    if ( skipEncodingCheck )
+                    {
+                      break;
+                    }
                     // cross-check the encoding: re-instantiate the cache
                     MicroCache mc2 = new MicroCache2( new StatCoderContext( subBytes ), new DataBuffers( null ), lonIdxDiv, latIdxDiv, divisor, null, null );
                     // ..and check if still the same
@@ -489,6 +611,11 @@ public class WayLinker extends MapCreatorBase
       RandomAccessFile ra = new RandomAccessFile( outfile, "rw" );
       ra.write( abFileIndex, 0, abFileIndex.length );
       ra.close();
+    }
+    if ( trafficMap != null )
+    {
+      trafficMap.finish();
+      trafficMap = null;
     }
     System.out.println( "**** codec stats: *******\n" + StatCoderContext.getBitReport() );
   }

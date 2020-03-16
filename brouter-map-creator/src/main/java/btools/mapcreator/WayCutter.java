@@ -31,14 +31,25 @@ public class WayCutter extends MapCreatorBase
 
   public void process( File nodeTilesIn, File wayFileIn, File wayTilesOut ) throws Exception
   {
-    this.outTileDir = wayTilesOut;
+    init( wayTilesOut );
 
-    // *** read all nodes into tileIndexMap
-    tileIndexMap = Boolean.getBoolean( "useDenseMaps" ) ? new DenseLongMap() : new TinyDenseLongMap();
     new NodeIterator( this, false ).processDir( nodeTilesIn, ".tlf" );
 
     // *** finally process the way-file, cutting into pieces
     new WayIterator( this, true ).processFile( wayFileIn );
+    finish();
+  }
+
+  public void init( File wayTilesOut ) throws Exception
+  {
+    this.outTileDir = wayTilesOut;
+
+    // *** read all nodes into tileIndexMap
+    tileIndexMap = Boolean.getBoolean( "useDenseMaps" ) ? new DenseLongMap() : new TinyDenseLongMap();
+  }
+
+  public void finish() throws Exception
+  {
     closeTileOutStreams();
   }
 
@@ -75,6 +86,12 @@ public class WayCutter extends MapCreatorBase
     }
   }
 
+
+  public int getTileIndexForNid( long nid )
+  {
+    return tileIndexMap.getInt( nid );
+  }
+
   private int getTileIndex( int ilon, int ilat )
   {
      int lon = ilon / 45000000;
@@ -83,7 +100,7 @@ public class WayCutter extends MapCreatorBase
      return lon*6 + lat;
   }
 
-  protected String getNameForTile( int tileIndex )
+  public String getNameForTile( int tileIndex )
   {
     int lon = (tileIndex / 6 ) * 45 - 180;
     int lat = (tileIndex % 6 ) * 30 - 90;
